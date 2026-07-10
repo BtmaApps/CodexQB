@@ -61,6 +61,21 @@ SAFE_PYTHON_MODULES = {"pytest", "unittest", "compileall"}
 SAFE_MAKE_TARGETS = {"check", "test", "lint", "typecheck", "smoke", "ci-local", "build"}
 SAFE_JS_SCRIPTS = {"test", "lint", "typecheck", "build", "check"}
 SAFE_RUFF_COMMANDS = {"check"}
+SAFE_GRADLE_TASK_PREFIXES = ("test", "check", "lint", "assemble")
+SAFE_GRADLE_FLAGS = {"--stacktrace", "--info", "--no-daemon", "--offline"}
+FORBIDDEN_GRADLE_TASK_FRAGMENTS = (
+    "publish",
+    "upload",
+    "deploy",
+    "install",
+    "uninstall",
+    "clean",
+    "wrapper",
+    "sign",
+    "dependencyupdate",
+    "refreshdependencies",
+)
+GRADLE_TASK_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 BUDGET_SCHEMA_VERSION = 1
 BUDGET_INT_LIMITS = {
     "soft_input_token_limit": (1, 10_000_000),
@@ -363,6 +378,42 @@ def parse_legacy_command(command: str) -> list[str] | None:
         return None
 
 
+def safe_gradle_validation_argv(argv: list[str]) -> bool:
+    if argv[0] != "./gradlew":
+        return False
+
+    saw_task = False
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--tests":
+            if index + 1 >= len(argv) or argv[index + 1].startswith("-"):
+                return False
+            index += 2
+            continue
+        if arg in SAFE_GRADLE_FLAGS:
+            index += 1
+            continue
+        if arg.startswith("-"):
+            return False
+
+        segments = arg.split(":")
+        if segments and segments[0] == "":
+            segments = segments[1:]
+        if not segments or any(not GRADLE_TASK_SEGMENT_RE.fullmatch(segment) for segment in segments):
+            return False
+
+        task_name = segments[-1].lower()
+        if any(fragment in task_name for fragment in FORBIDDEN_GRADLE_TASK_FRAGMENTS):
+            return False
+        if not any(task_name.startswith(prefix) for prefix in SAFE_GRADLE_TASK_PREFIXES):
+            return False
+        saw_task = True
+        index += 1
+
+    return saw_task
+
+
 def safe_validation_argv(argv: object, *, allow_uv: bool = True) -> bool:
     if not isinstance(argv, list) or len(argv) < 2:
         return False
@@ -409,6 +460,8 @@ def safe_validation_argv(argv: object, *, allow_uv: bool = True) -> bool:
         return len(normalized) >= 2 and normalized[1] in SAFE_RUFF_COMMANDS
     if executable == "mypy":
         return True
+    if executable == "gradlew":
+        return safe_gradle_validation_argv(normalized)
     return False
 
 
